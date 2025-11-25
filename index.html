@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>NEON PULSE</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;800&display=swap');
+
+        :root {
+            --bg: #000000;
+            --neon-blue: #00f3ff;
+            --neon-pink: #ff0055;
+        }
+
+        * {
+            box-sizing: border-box;
+            touch-action: none; /* Mobilde kaydırmayı/zoom'u engeller - ÇOK ÖNEMLİ */
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            margin: 0; padding: 0;
+            outline: none;
+        }
+
+        body {
+            background-color: var(--bg);
+            font-family: 'Inter', sans-serif;
+            overflow: hidden;
+            position: fixed;
+            width: 100%; height: 100%;
+            cursor: crosshair;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 20;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #input-layer {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 10;
+            /* Dokunmatik olayları burası yakalayacak */
+        }
+
+        /* SKOR */
+        .score-display {
+            position: absolute;
+            top: max(40px, env(safe-area-inset-top));
+            font-size: 5rem;
+            font-weight: 900;
+            color: rgba(255,255,255,0.1);
+            letter-spacing: -2px;
+            transition: transform 0.1s, color 0.1s;
+        }
+        .score-display.active { color: rgba(255,255,255,0.8); }
+        .score-display.pop { transform: scale(1.2); color: #fff; text-shadow: 0 0 30px #fff; }
+
+        /* EKRANLAR */
+        .screen {
+            position: absolute;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            transition: opacity 0.2s ease;
+            opacity: 0;
+            pointer-events: none;
+        }
+        .screen.active { opacity: 1; pointer-events: auto; }
+
+        h1 {
+            font-size: 4rem;
+            font-weight: 900;
+            color: #fff;
+            letter-spacing: -2px;
+            margin-bottom: 40px;
+            text-align: center;
+            text-shadow: 0 0 40px var(--neon-blue);
+        }
+
+        /* BUTONLAR */
+        .btn-neon {
+            background: #fff;
+            color: #000;
+            font-family: 'Inter', sans-serif;
+            font-size: 1.2rem;
+            font-weight: 800;
+            padding: 20px 70px;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            pointer-events: auto;
+            box-shadow: 0 0 30px rgba(255,255,255,0.3);
+            transition: transform 0.1s;
+            text-transform: uppercase;
+            position: relative;
+            z-index: 30;
+        }
+        
+        .btn-neon:active { transform: scale(0.95); }
+
+        .tap-hint {
+            position: absolute;
+            bottom: 20%;
+            font-size: 1rem;
+            color: rgba(255,255,255,0.5);
+            letter-spacing: 2px;
+            animation: pulse 2s infinite;
+            pointer-events: none;
+            font-weight: 600;
+        }
+        .tap-hint.visible { opacity: 1; }
+        
+        @keyframes pulse { 0%,100%{opacity:0.4} 50%{opacity:1} }
+
+        .stats-box { display: flex; gap: 50px; margin-bottom: 50px; }
+        .stat { text-align: center; }
+        .stat-val { display: block; font-size: 2.5rem; font-weight: 800; color: #fff; }
+        .stat-lbl { font-size: 0.8rem; color: var(--neon-pink); font-weight: 700; letter-spacing: 1px; }
+
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+    
+    <!-- Dokunmatik olayları yakalayan görünmez katman -->
+    <div id="input-layer"></div>
+
+    <div id="ui-layer">
+        <div class="score-display" id="scoreEl">0</div>
+        <div class="tap-hint" id="tapHint">DRAG TO MOVE</div>
+
+        <!-- Start Screen -->
+        <div id="screen-start" class="screen active">
+            <h1>NEON<br>PULSE</h1>
+            <button class="btn-neon" id="btnStart">PLAY</button>
+        </div>
+
+        <!-- Game Over Screen -->
+        <div id="screen-over" class="screen">
+            <h1 style="color: var(--neon-pink); text-shadow: 0 0 40px var(--neon-pink);">CRASHED</h1>
+            <div class="stats-box">
+                <div class="stat">
+                    <span class="stat-lbl">SCORE</span>
+                    <span class="stat-val" id="finalScore">0</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-lbl">BEST</span>
+                    <span class="stat-val" id="bestScore">0</span>
+                </div>
+            </div>
+            <button class="btn-neon" id="btnRetry">RETRY</button>
+        </div>
+    </div>
+
+    <script>
+        (function() {
+            // --- AYARLAR ---
+            const C = {
+                // Hareket Ayarları (Direct Control)
+                followSpeed: 15,     // Topun parmağı takip etme hızı (Yüksek = Daha sıkı takip)
+                gravity: 1200,       // Bırakınca düşme hızı
+                
+                // Oyun Akışı
+                speed: 380,          // Başlangıç hızı
+                maxSpeed: 650,
+                gapSize: 320,
+                
+                colors: {
+                    bg: '#000000',
+                    grid: '#1a1a1a',
+                    player: '#ffffff',
+                    neon: '#00f3ff'
+                }
+            };
+
+            // --- SES ---
+            const Audio = {
+                ctx: null,
+                init() {
+                    if (!this.ctx) {
+                        const AC = window.AudioContext || window.webkitAudioContext;
+                        if (AC) this.ctx = new AC();
+                    }
+                    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume().catch(()=>{});
+                },
+                play(type) {
+                    if (!this.ctx) return;
+                    const t = this.ctx.currentTime;
+                    const osc = this.ctx.createOscillator();
+                    const gain = this.ctx.createGain();
+                    osc.connect(gain);
+                    gain.connect(this.ctx.destination);
+
+                    if (type === 'score') { 
+                        osc.type = 'sine';
+                        osc.frequency.setValueAtTime(880, t);
+                        gain.gain.setValueAtTime(0.05, t);
+                        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+                        osc.start(t); osc.stop(t + 0.15);
+                    } else if (type === 'crash') {
+                        osc.type = 'sawtooth';
+                        osc.frequency.setValueAtTime(100, t);
+                        osc.frequency.exponentialRampToValueAtTime(10, t + 0.4);
+                        gain.gain.setValueAtTime(0.2, t);
+                        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+                        osc.start(t); osc.stop(t + 0.4);
+                    }
+                }
+            };
+
+            // --- OYUN DURUMU ---
+            const canvas = document.getElementById('gameCanvas');
+            const ctx = canvas.getContext('2d', { alpha: false });
+            
+            let state = {
+                w: 0, h: 0,
+                mode: 'MENU', 
+                score: 0,
+                highScore: parseInt(localStorage.getItem('np_best')) || 0,
+                player: { x: 0, y: 0, vy: 0, r: 0, squash: 1 },
+                obstacles: [],
+                particles: [],
+                input: { active: false, y: 0 }, // Dokunma durumu ve konumu
+                time: 0,
+                hue: 0,
+                currentSpeed: C.speed
+            };
+
+            // --- FİZİK MOTORU (SÜRÜKLEME ODAKLI) ---
+            function updatePhysics(dt) {
+                // HAZIRLIK MODU: Top parmağı bekler
+                if (state.mode === 'READY') {
+                    // Parmak varsa oraya git, yoksa ortada süzül
+                    const targetY = state.input.active ? state.input.y : state.h / 2 + Math.sin(state.time*5)*20;
+                    state.player.y += (targetY - state.player.y) * 5 * dt;
+                    
+                    // Parmak basıldıysa başlat
+                    if (state.input.active) {
+                        state.mode = 'PLAY';
+                        document.getElementById('tapHint').classList.remove('visible');
+                        document.getElementById('scoreEl').classList.add('active');
+                        spawnObstacle();
+                    }
+                    return;
+                }
+
+                if (state.mode !== 'PLAY') return;
+
+                // OYNANIŞ FİZİĞİ
+                if (state.input.active) {
+                    // Parmağı Takip Et (Follow Finger)
+                    const diff = state.input.y - state.player.y;
+                    // Mesafeye göre hızlanarak git (Smooth ama hızlı)
+                    state.player.vy = diff * C.followSpeed;
+                } else {
+                    // Parmak yoksa düş (Gravity)
+                    state.player.vy += C.gravity * dt;
+                }
+
+                // Konum Güncelle
+                state.player.y += state.player.vy * dt;
+
+                // Esneme Efekti (Squash & Stretch)
+                const speedRatio = Math.abs(state.player.vy) / 1000;
+                const targetSquash = 1 + (speedRatio * 0.15); 
+                state.player.squash += (targetSquash - state.player.squash) * 0.2;
+
+                // ÇARPIŞMA (Sınırlar)
+                // Tavan: Dur
+                if (state.player.y < state.player.r) {
+                    state.player.y = state.player.r;
+                    state.player.vy = 0;
+                }
+                // Zemin: Ölüm
+                if (state.player.y > state.h - state.player.r) gameOver();
+
+                // ENGELLER
+                state.currentSpeed = Math.min(C.speed + (state.score * 5), C.maxSpeed);
+                
+                const lastObs = state.obstacles[state.obstacles.length - 1];
+                if (!lastObs || (state.w - lastObs.x > state.w * 0.6)) {
+                    spawnObstacle();
+                }
+
+                for (let i = state.obstacles.length - 1; i >= 0; i--) {
+                    let o = state.obstacles[i];
+                    o.x -= state.currentSpeed * dt;
+
+                    // Hitbox (%60 toleranslı)
+                    const p = state.player;
+                    const hitX = p.x + p.r * 0.6 > o.x && p.x - p.r * 0.6 < o.x + o.w;
+                    
+                    if (hitX) {
+                        const hitTop = p.y - p.r * 0.6 < o.topH;
+                        const hitBot = p.y + p.r * 0.6 > o.topH + o.gap;
+                        if (hitTop || hitBot) gameOver();
+                    }
+
+                    if (!o.passed && o.x + o.w < p.x) {
+                        o.passed = true;
+                        state.score++;
+                        const el = document.getElementById('scoreEl');
+                        el.innerText = state.score;
+                        el.classList.remove('pop');
+                        void el.offsetWidth;
+                        el.classList.add('pop');
+                        Audio.play('score');
+                    }
+
+                    if (o.x + o.w < 0) state.obstacles.splice(i, 1);
+                }
+
+                // PARÇACIKLAR
+                for (let i = state.particles.length - 1; i >= 0; i--) {
+                    let p = state.particles[i];
+                    p.x += p.vx * dt;
+                    p.y += p.vy * dt;
+                    p.life -= dt * 2;
+                    if (p.life <= 0) state.particles.splice(i, 1);
+                }
+            }
+
+            // --- YARDIMCILAR ---
+            function resetGame() {
+                state.player.r = state.w * 0.03;
+                state.player.x = state.w * 0.2;
+                state.player.y = state.h / 2;
+                state.player.vy = 0;
+                state.player.squash = 1;
+                
+                state.obstacles = [];
+                state.particles = [];
+                state.score = 0;
+                state.time = 0;
+                state.currentSpeed = C.speed;
+                state.input.active = false;
+                state.input.y = state.h / 2;
+                
+                document.getElementById('scoreEl').innerText = '0';
+                document.getElementById('scoreEl').classList.remove('active');
+                document.getElementById('screen-start').classList.remove('active');
+                document.getElementById('screen-over').classList.remove('active');
+                document.getElementById('tapHint').classList.add('visible');
+                
+                state.mode = 'READY'; 
+            }
+
+            function spawnObstacle() {
+                const w = state.w * 0.08; 
+                const gap = C.gapSize - Math.min(state.score, 80); 
+                const minY = state.h * 0.1;
+                const maxY = state.h * 0.9 - gap;
+                const topH = Math.random() * (maxY - minY) + minY;
+
+                state.obstacles.push({
+                    x: state.w + 100, w, topH, gap, passed: false
+                });
+            }
+
+            function createExplosion(x, y, color) {
+                for (let i = 0; i < 40; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = Math.random() * 300 + 50;
+                    state.particles.push({
+                        x: x, y: y,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        life: 1.0,
+                        color: color,
+                        size: Math.random() * 4 + 1
+                    });
+                }
+            }
+
+            function gameOver() {
+                state.mode = 'OVER';
+                Audio.play('crash');
+                createExplosion(state.player.x, state.player.y, '#fff');
+
+                if (state.score > state.highScore) {
+                    state.highScore = state.score;
+                    localStorage.setItem('np_best', state.highScore);
+                }
+
+                document.getElementById('finalScore').innerText = state.score;
+                document.getElementById('bestScore').innerText = state.highScore;
+                document.getElementById('screen-over').classList.add('active');
+                document.getElementById('scoreEl').classList.remove('active');
+            }
+
+            // --- ÇİZİM ---
+            function draw() {
+                ctx.fillStyle = C.colors.bg;
+                ctx.fillRect(0, 0, state.w, state.h);
+
+                // Grid
+                ctx.strokeStyle = C.colors.grid;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                
+                const speed = (state.mode === 'PLAY') ? state.currentSpeed : 50;
+                const gridOffset = (state.time * speed * 0.5) % 100;
+                const horizon = state.h * 0.5;
+                const bottom = state.h;
+                const cx = state.w / 2;
+                
+                for (let i = -8; i <= 8; i++) {
+                    const x1 = cx + i * 60;
+                    const x2 = cx + i * 250;
+                    ctx.moveTo(x1, horizon);
+                    ctx.lineTo(x2, bottom);
+                }
+                for (let i = 0; i < 8; i++) {
+                    const p = (i * 150 + gridOffset) % 1200; 
+                    const yNorm = p / 1200; 
+                    const yPos = horizon + (yNorm * yNorm * (state.h * 0.5));
+                    ctx.moveTo(0, yPos);
+                    ctx.lineTo(state.w, yPos);
+                }
+                ctx.stroke();
+
+                // Engeller
+                ctx.globalCompositeOperation = 'screen'; 
+                state.obstacles.forEach(o => {
+                    ctx.shadowBlur = 20;
+                    ctx.shadowColor = C.colors.neon;
+                    ctx.fillStyle = C.colors.neon;
+                    ctx.fillRect(o.x, 0, o.w, o.topH);
+                    ctx.fillRect(o.x, o.topH + o.gap, o.w, state.h);
+                    
+                    ctx.shadowBlur = 0;
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(o.x + 4, 0, o.w - 8, o.topH - 4);
+                    ctx.fillRect(o.x + 4, o.topH + o.gap + 4, o.w - 8, state.h);
+                });
+                ctx.globalCompositeOperation = 'source-over';
+
+                // Oyuncu
+                if (state.mode !== 'OVER') {
+                    const p = state.player;
+                    ctx.save();
+                    ctx.translate(p.x, p.y);
+                    ctx.scale(1/p.squash, p.squash);
+
+                    ctx.shadowBlur = 25;
+                    ctx.shadowColor = C.colors.neon; 
+                    
+                    ctx.fillStyle = C.colors.player; 
+                    ctx.beginPath();
+                    ctx.arc(0, 0, p.r, 0, Math.PI*2);
+                    ctx.fill();
+
+                    ctx.restore();
+                }
+
+                // Parçacıklar
+                state.particles.forEach(p => {
+                    ctx.globalAlpha = p.life;
+                    ctx.fillStyle = p.color || '#fff';
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.size || 2, 0, Math.PI*2);
+                    ctx.fill();
+                });
+                ctx.globalAlpha = 1;
+            }
+
+            // --- INPUT (SÜRÜKLEME VE DOKUNMA) ---
+            const inputLayer = document.getElementById('input-layer');
+
+            function handleStart(e) {
+                if (e.cancelable) e.preventDefault();
+                state.input.active = true;
+                updateInputPos(e);
+                Audio.init();
+            }
+
+            function handleMove(e) {
+                if (state.input.active) {
+                    if (e.cancelable) e.preventDefault();
+                    updateInputPos(e);
+                }
+            }
+
+            function handleEnd(e) {
+                if (e.cancelable) e.preventDefault();
+                state.input.active = false;
+            }
+
+            function updateInputPos(e) {
+                // Mouse veya Touch koordinatlarını al
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                state.input.y = clientY;
+            }
+
+            // Pointer Events (Hem Mouse Hem Touch)
+            inputLayer.addEventListener('pointerdown', handleStart);
+            inputLayer.addEventListener('pointermove', handleMove);
+            inputLayer.addEventListener('pointerup', handleEnd);
+            inputLayer.addEventListener('pointerleave', handleEnd);
+            
+            // Mobil Uyumluluk (Yedek)
+            inputLayer.addEventListener('touchstart', handleStart, {passive: false});
+            inputLayer.addEventListener('touchmove', handleMove, {passive: false});
+            inputLayer.addEventListener('touchend', handleEnd, {passive: false});
+
+            // UI Butonları
+            const bindBtn = (id, action) => {
+                const el = document.getElementById(id);
+                if(!el) return;
+                
+                const trigger = (e) => {
+                    e.stopPropagation();
+                    Audio.init();
+                    action();
+                };
+                
+                el.addEventListener('click', trigger);
+                el.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    trigger(e);
+                }, {passive: false});
+            };
+
+            bindBtn('btnStart', resetGame);
+            bindBtn('btnRetry', resetGame);
+
+            function resize() {
+                state.w = window.innerWidth;
+                state.h = window.innerHeight;
+                canvas.width = state.w;
+                canvas.height = state.h;
+                if (state.mode === 'MENU' || state.mode === 'READY') {
+                    state.player.x = state.w * 0.2;
+                    state.player.y = state.h / 2;
+                    state.player.r = state.w * 0.03;
+                }
+            }
+            window.addEventListener('resize', resize);
+
+            let lastTime = 0;
+            function loop(timestamp) {
+                const dt = Math.min((timestamp - lastTime) / 1000, 0.1);
+                lastTime = timestamp;
+                
+                state.time += dt;
+                updatePhysics(dt);
+                draw();
+                requestAnimationFrame(loop);
+            }
+
+            resize();
+            state.player.r = state.w * 0.03;
+            state.player.x = state.w * 0.2;
+            state.player.y = state.h / 2;
+            requestAnimationFrame(loop);
+
+        })();
+    </script>
+</body>
+</html>
